@@ -5,8 +5,8 @@ const ws = require("ws");
 const zlib = require("zlib");
 
 const dev = process.env.NODE_ENV !== "production";
-const hostname = "localhost";
-const port = 3000;
+const hostname = "0.0.0.0"; // Vercel'de çalışacak şekilde ayarlandı.
+const port = process.env.PORT || 3000;
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
@@ -82,151 +82,36 @@ const updateState = (data) => {
   }
 };
 
-const setupStream = async (wss) => {
-  console.log(`[${signalrUrl}] Connecting to live timing stream`);
+app.prepare().then(() => {
+  const server = createServer((req, res) => {
+    const parsedUrl = parse(req.url, true);
+    handle(req, res, parsedUrl);
+  });
 
-  const hub = encodeURIComponent(JSON.stringify([{ name: signalrHub }]));
-  const negotiation = await fetch(
-    `https://${signalrUrl}/negotiate?connectionData=${hub}&clientProtocol=1.5`
-  );
-  const cookie =
-    negotiation.headers.get("Set-Cookie") ??
-    negotiation.headers.get("set-cookie");
-  const { ConnectionToken } = await negotiation.json();
+  const wss = new ws.Server({ server, path: "/ws" });
 
-  if (cookie && ConnectionToken) {
-    console.log(`[${signalrUrl}] HTTP negotiation complete`);
+  wss.on("connection", (socket) => {
+    console.log("New WebSocket connection");
 
-    const socket = new ws(
-      `wss://${signalrUrl}/connect?clientProtocol=1.5&transport=webSockets&connectionToken=${encodeURIComponent(
-        ConnectionToken
-      )}&connectionData=${hub}`,
-      [],
-      {
-        headers: {
-          "User-Agent": "BestHTTP",
-          "Accept-Encoding": "gzip,identity",
-          Cookie: cookie,
-        },
-      }
-    );
-
-    socket.on("open", () => {
-      console.log(`[${signalrUrl}] WebSocket open`);
-
-      state = {};
-      messageCount = 0;
-      emptyMessageCount = {};
-
-      socket.send(
-        JSON.stringify({
-          H: signalrHub,
-          M: "Subscribe",
-          A: [
-            [
-              "Heartbeat",
-              "CarData.z",
-              "Position.z",
-              "ExtrapolatedClock",
-              "TimingStats",
-              "TimingAppData",
-              "WeatherData",
-              "TrackStatus",
-              "DriverList",
-              "RaceControlMessages",
-              "SessionInfo",
-              "SessionData",
-              "LapCount",
-              "TimingData",
-              "TeamRadio",
-            ],
-          ],
-          I: 1,
-        })
-      );
-    });
-
-    socket.on("message", (data) => {
-      updateState(data);
-    });
-
-    socket.on("error", () => {
-      console.log("socket error");
-      socket.close();
+    socket.on("message", (message) => {
+      console.log("Received:", message);
     });
 
     socket.on("close", () => {
-      console.log("socket close");
-      state = {};
-      messageCount = 0;
-      emptyMessageCount = {};
-
-      setTimeout(() => {
-        setupStream(wss);
-      }, retryFreq);
+      console.log("WebSocket connection closed");
     });
-  } else {
-    console.log(
-      `[${signalrUrl}] HTTP negotiation failed. Is there a live session?`
-    );
-    state = {};
-    messageCount = 0;
 
-    setTimeout(() => {
-      setupStream(wss);
-    }, retryFreq);
-  }
-};
-
-app.prepare().then(async () => {
-  const wss = new ws.WebSocketServer({ noServer: true });
-
-  const server = createServer(async (req, res) => {
-    try {
-      const parsedUrl = parse(req.url, true);
-      await handle(req, res, parsedUrl);
-    } catch (err) {
-      console.error("Error occurred handling", req.url, err);
-      res.statusCode = 500;
-      res.end("internal server error");
-    }
-  });
-
-  server.on("upgrade", (req, socket, head) => {
-    const { pathname } = parse(req.url, true);
-    if (pathname === "/ws") {
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        wss.emit("connection", ws, req);
-      });
-    } else if (pathname === "/_next/webpack-hmr") {
-      // Don't destroy, needed for HMR
-    } else {
-      socket.destroy();
-    }
-  });
-
-  server.once("error", (err) => {
-    console.error(err);
-    process.exit(1);
+    // Periodically send the state to clients
+    const interval = setInterval(() => {
+      if (socket.readyState === ws.OPEN) {
+        socket.send(JSON.stringify(state));
+      } else {
+        clearInterval(interval);
+      }
+    }, socketFreq);
   });
 
   server.listen(port, () => {
-    console.log(`Monaco server ready on http://${hostname}:${port}`);
+    console.log(`> Ready on http://${hostname}:${port}`);
   });
-
-  // Assume we have an active session after 5 messages
-  let active;
-
-  setInterval(() => {
-    active = messageCount > 5 || dev;
-    wss.clients.forEach((s) => {
-      if (s.readyState === ws.OPEN) {
-        s.send(active ? JSON.stringify(state) : "{}", {
-          binary: false,
-        });
-      }
-    });
-  }, socketFreq);
-
-  await setupStream(wss);
 });
