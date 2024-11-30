@@ -1,11 +1,11 @@
 {
-  "name": "monacso",
+  "name": "monaco",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "nodemon --ignore components --ignore pages --ignore public server.js",
+    "dev": "next dev", // Geliştirme için next dev kullanın
     "build": "next build",
-    "start": "NODE_ENV=production node server.js",
+    "start": "next start", // Vercel için next start kullanın
     "lint": "next lint"
   },
   "dependencies": {
